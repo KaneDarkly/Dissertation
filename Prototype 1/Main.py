@@ -1,1 +1,3 @@
-print("Hello World!")
+from WindowSetup import Create_Window
+
+Create_Window()
