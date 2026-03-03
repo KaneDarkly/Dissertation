@@ -1,19 +1,9 @@
-# Source - https://stackoverflow.com/a/23840010
-# Posted by Brōtsyorfuzthrāx, modified by community. See post 'Timeline' for change history
-# Retrieved 2026-03-03, License - CC BY-SA 3.0
-
-import sys
-if sys.version_info[0] == 2:  # Just checking your Python version to import Tkinter properly.
-    from Tkinter import *
-else:
-    from tkinter import *
-
+from tkinter import *
 
 class Fullscreen_Window:
 
     def __init__(self):
         self.tk = Tk()
-        #self.tk.attributes('-fullscreen', True)  # This just maximizes it so we can see the window. It's nothing to do with fullscreen.
         self.frame = Frame(self.tk)
         self.frame.pack()
         self.state = False
@@ -27,6 +17,18 @@ class Fullscreen_Window:
         width, height = 1000, 700
         self.tk.geometry(f"{width}x{height}")
         self._center_window(width, height)
+        taskbar = Frame(self.tk, bg='lightgrey', height=30)
+        taskbar.pack(side=TOP, fill=X)
+
+        # Add some buttons to the taskbar
+        btn1 = Button(taskbar, text='Button 1')
+        btn1.pack(side=LEFT, padx=5, pady=5)
+
+        btn2 = Button(taskbar, text='Button 2')
+        btn2.pack(side=LEFT, padx=5, pady=5)
+
+        btn3 = Button(taskbar, text='Button 3')
+        btn3.pack(side=LEFT, padx=5, pady=5)
 
     def toggle_fullscreen(self, event=None):
         self.state = not self.state  # Just toggling the boolean
@@ -34,13 +36,6 @@ class Fullscreen_Window:
         return "break"
 
     def _center_window(self, width, height):
-        """Position the root window in the centre of the screen.
-
-        ``width`` and ``height`` are the intended dimensions of the window.  We
-        compute the offsets based on the screen size and then update the
-        geometry accordingly.  An explicit call to ``update_idletasks`` ensures
-        that any pending geometry changes are processed before we query sizes.
-        """
         self.tk.update_idletasks()
         screen_w = self.tk.winfo_screenwidth()
         screen_h = self.tk.winfo_screenheight()
@@ -56,4 +51,4 @@ class Fullscreen_Window:
 def Create_Window():
     w = Fullscreen_Window()
     w.tk.mainloop()
-
+    return w.tk
