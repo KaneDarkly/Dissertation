@@ -1,4 +1,5 @@
 from tkinter import *
+from tkinter import filedialog
 
 class Fullscreen_Window:
 
@@ -21,7 +22,7 @@ class Fullscreen_Window:
         taskbar.pack(side=TOP, fill=X)
 
         # Add some buttons to the taskbar
-        btn1 = Button(taskbar, text='Button 1')
+        btn1 = Button(taskbar, text='Open File', command=self.open_file)
         btn1.pack(side=LEFT, padx=5, pady=5)
 
         btn2 = Button(taskbar, text='Button 2')
@@ -29,6 +30,11 @@ class Fullscreen_Window:
 
         btn3 = Button(taskbar, text='Button 3')
         btn3.pack(side=LEFT, padx=5, pady=5)
+
+    def open_file(self):
+        self.filename = filedialog.askopenfilename(initialdir="/", title="Select a File", filetypes=[("Image files", "*.jpg *.jpeg *.png *.bmp")])
+        my_label = Label(self.tk, text=self.filename)
+        my_label.pack()
 
     def toggle_fullscreen(self, event=None):
         self.state = not self.state  # Just toggling the boolean
