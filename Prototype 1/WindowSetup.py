@@ -22,19 +22,15 @@ class Fullscreen_Window:
         taskbar.pack(side=TOP, fill=X)
 
         # Add some buttons to the taskbar
-        btn1 = Button(taskbar, text='Open File', command=self.open_file)
+        from OpenFile import open_file, mount_e01_arsenal, unmount_arsenal
+        btn1 = Button(taskbar, text='Open File', command=lambda: open_file(self))
         btn1.pack(side=LEFT, padx=5, pady=5)
 
-        btn2 = Button(taskbar, text='Button 2')
-        btn2.pack(side=LEFT, padx=5, pady=5)
+        btn_arsenal = Button(taskbar, text='Mount E01 (AIM Read-Only)', command=lambda: mount_e01_arsenal(self))
+        btn_arsenal.pack(side=LEFT, padx=5, pady=5)
 
-        btn3 = Button(taskbar, text='Button 3')
-        btn3.pack(side=LEFT, padx=5, pady=5)
-
-    def open_file(self):
-        self.filename = filedialog.askopenfilename(initialdir="/", title="Select a File", filetypes=[("Image files", "*.jpg *.jpeg *.png *.bmp")])
-        my_label = Label(self.tk, text=self.filename)
-        my_label.pack()
+        btn_unmount = Button(taskbar, text='Unmount AIM Z:', command=lambda: unmount_arsenal(self))
+        btn_unmount.pack(side=LEFT, padx=5, pady=5)
 
     def toggle_fullscreen(self, event=None):
         self.state = not self.state  # Just toggling the boolean
