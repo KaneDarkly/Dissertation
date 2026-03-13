@@ -37,26 +37,19 @@ def mount_e01_arsenal(self):
             "--readonly"
         ]
         # Show a 'Mounting in progress...' label at the bottom
-        if hasattr(self, 'mount_label') and self.mount_label:
-            self.mount_label.destroy()
-        self.mount_label = None
-        def show_mounting_label():
-            self.mount_label = ttk.Label(self.tk, text="Mounting in progress...", anchor='center')
-            self.mount_label.pack(side='bottom', pady=10)
-        self.tk.after(0, show_mounting_label)
 
+
+        # Show messagebox immediately as mounting begins
+        messagebox.showinfo("Success", "E01 mounted as read-only using Arsenal Image Mounter.")
         def run_mount():
             result = subprocess.run(cmd, capture_output=True, text=True)
             print(f"[AIM] Return code: {result.returncode}")
             print(f"[AIM] Stdout: {result.stdout}")
             print(f"[AIM] Stderr: {result.stderr}")
-            if self.mount_label:
-                self.mount_label.destroy()
-                self.mount_label = None
             if result.returncode == 0:
-                messagebox.showinfo("Success", f"E01 mounted as read-only using Arsenal Image Mounter.")
+                pass
             else:
-                messagebox.showerror("AIM Error", f"Failed to mount image:\n{result.stderr}")
+                self.tk.after(0, lambda: messagebox.showerror("AIM Error", f"Failed to mount image:\n{result.stderr}"))
 
         threading.Thread(target=run_mount, daemon=True).start()
 
