@@ -1,7 +1,3 @@
-
-def open_file(self):
-    # This is a placeholder. You can implement the original open_file logic or leave it as a stub if only Arsenal mounting is needed.
-    messagebox.showinfo("Info", "Use the Arsenal Mount button to mount E01 images, or implement open_file logic here.")
 from tkinter import  filedialog, messagebox, ttk
 import subprocess
 import os
