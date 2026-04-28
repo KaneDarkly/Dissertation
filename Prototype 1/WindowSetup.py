@@ -5,6 +5,7 @@ import os
 from OpenFile import mount_e01_arsenal, unmount_arsenal
 from Extract_Arefacts import extract_browser_artefacts_from_mounted
 from drive_utils import list_all_drives, get_newly_mounted_drive
+import time
 
 
 class Fullscreen_Window:
@@ -27,21 +28,23 @@ class Fullscreen_Window:
         self.taskbar = Frame(self.tk, bg='lightgrey', height=30)
         self.taskbar.pack(side=TOP, fill=X)
 
-        btn_arsenal = Button(self.taskbar, text='Mount E01 (AIM Read-Only)', command=self.store_drives_and_mount)
+        btn_arsenal = Button(self.taskbar, text='Select File', command=self.store_drives_and_mount)
         btn_arsenal.pack(side=LEFT, padx=5, pady=5)
 
-        btn_unmount = Button(self.taskbar, text='Unmount AIM Z:', command=lambda: unmount_arsenal(self))
-        btn_unmount.pack(side=LEFT, padx=5, pady=5)
+        #btn_unmount = Button(self.taskbar, text='Unmount AIM Z:', command=lambda: unmount_arsenal(self))
+        #btn_unmount.pack(side=LEFT, padx=5, pady=5)
 
-        btn_extract = Button(self.taskbar, text='Extract Browser Artefacts', command=self.extract_artefacts_mounted_gui)
-        btn_extract.pack(side=LEFT, padx=5, pady=5)
+        #btn_extract = Button(self.taskbar, text='Extract Browser Artefacts', command=self.extract_artefacts_mounted_gui)
+        #btn_extract.pack(side=LEFT, padx=5, pady=5)
 
     def store_drives_and_mount(self):
         self.drives_before_mount = list_all_drives()
         mount_e01_arsenal(self)
+        # Pass a callback to unmount after extraction completes
+        self.extract_artefacts_mounted_gui(lambda: unmount_arsenal(self))
 
 
-    def extract_artefacts_mounted_gui(self):
+    def extract_artefacts_mounted_gui(self, on_complete=None):
         # Use the drives stored at mount time as the 'before' set
         drives_before = getattr(self, 'drives_before_mount', None)
         if drives_before is None:
@@ -131,6 +134,9 @@ class Fullscreen_Window:
                 self.tk.after(0, lambda: messagebox.showinfo("Extraction Complete", msg))
             else:
                 self.tk.after(0, lambda: messagebox.showinfo("No Artefacts Found", "No browser artefacts were found in the mounted drive."))
+            # Call the on_complete callback if provided
+            if on_complete:
+                self.tk.after(0, on_complete)
 
         threading.Thread(target=do_extraction, daemon=True).start()
 
