@@ -1,6 +1,7 @@
 
 import os
 import shutil
+import hashlib
 
 # List of browser artefact file patterns to look for
 BROWSER_PATTERNS = [
@@ -20,6 +21,37 @@ BROWSER_DIRS = [
     'Opera', 'Brave', 'Vivaldi', 'Chromium', 'Safari', 'AppData/Local/Google/Chrome',
     'AppData/Local/Microsoft/Edge', 'AppData/Roaming/Mozilla/Firefox',
 ]
+
+def _win_long(path):
+    """
+    Prefix an absolute path with \\?\ so Windows skips the 260-char MAX_PATH
+    limit and allows paths up to 32,767 characters.  No-op on non-Windows.
+    """
+    if os.name != 'nt':
+        return path
+    path = os.path.abspath(path)
+    if not path.startswith('\\\\?\\'):
+        path = '\\\\?\\' + path
+    return path
+
+
+def _safe_dest(output_dir, user, browser, rel_path_after_browser):
+    """
+    Build a destination path.  If any single path component exceeds 200 chars
+    (well under NTFS's 255-char per-component limit) it is truncated and given
+    an 8-hex-char MD5 suffix so the name stays unique and recognisable.
+    The \\?\ extended-length prefix is applied separately at copy time.
+    """
+    parts = rel_path_after_browser.split(os.sep)
+    safe_parts = []
+    for part in parts:
+        if len(part) > 200:
+            name, ext = os.path.splitext(part)
+            h = hashlib.md5(part.encode('utf-8', errors='replace')).hexdigest()[:8]
+            part = name[:190] + '_' + h + ext
+        safe_parts.append(part)
+    return os.path.join(output_dir, user, browser, *safe_parts)
+
 
 def is_browser_artefact(filename, path):
     # Check if the file matches any known browser artefact pattern
@@ -60,7 +92,7 @@ def extract_browser_artefacts_from_mounted(mount_root, output_dir=None, progress
                 for b in browser_names:
                     b_parts = b.split('/')
                     for i in range(2, len(parts) - len(b_parts) + 1):
-                        if [p.lower() for p in parts[i:i+len(b_parts)]] == [bp.lower() for bp in b_parts]:
+                        if all(bp.lower() in parts[i+j].lower() for j, bp in enumerate(b_parts)):
                             browser = b_parts[-1]
                             rel_path_after_browser = os.sep.join(parts[i+len(b_parts):])
                             break
@@ -73,9 +105,9 @@ def extract_browser_artefacts_from_mounted(mount_root, output_dir=None, progress
         artefacts.append((full_path, user, browser, rel_path_after_browser))
         if output_dir:
             try:
-                dest_path = os.path.join(output_dir, user, browser, rel_path_after_browser)
-                os.makedirs(os.path.dirname(dest_path), exist_ok=True)
-                shutil.copy2(full_path, dest_path)
+                dest_path = _safe_dest(output_dir, user, browser, rel_path_after_browser)
+                os.makedirs(_win_long(os.path.dirname(dest_path)), exist_ok=True)
+                shutil.copy2(_win_long(full_path), _win_long(dest_path))
             except Exception as e:
                 print(f"Failed to copy {full_path}: {e}")
                 failed += 1

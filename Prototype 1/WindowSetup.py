@@ -4,122 +4,572 @@ from tkinter import ttk
 import os
 from OpenFile import mount_e01_arsenal, unmount_arsenal
 from Extract_Arefacts import extract_browser_artefacts_from_mounted
-from drive_utils import list_all_drives, get_newly_mounted_drive
+from drive_utils import list_all_drives
+from private_browsing_check import check_private_browsing_indicators
+from private_artefacts import (
+    discover_browser_artefact_files,
+    parse_chromium_bookmarks, parse_firefox_bookmarks,
+    parse_chromium_history,   parse_firefox_history,
+    parse_chromium_downloads,
+)
 import time
+
+# ── Colour palette ────────────────────────────────────────────────────────────
+BG        = "#0d1117"   # main background
+PANEL     = "#161b22"   # card / panel background
+TOOLBAR   = "#010409"   # header & status bar
+ACCENT    = "#58a6ff"   # highlight blue
+TEXT      = "#c9d1d9"   # primary text
+TEXT_DIM  = "#8b949e"   # secondary / muted text
+BORDER    = "#30363d"   # borders / separators
+BTN_BG    = "#21262d"   # button background
+BTN_HOVER = "#30363d"   # button hover background
+
+FONT_TITLE = ("Segoe UI", 15, "bold")
+FONT_HEAD  = ("Segoe UI", 11, "bold")
+FONT_MAIN  = ("Segoe UI", 10)
+FONT_SUB   = ("Segoe UI",  9)
+# ─────────────────────────────────────────────────────────────────────────────
 
 
 class Fullscreen_Window:
 
     def __init__(self):
         self.tk = Tk()
-        self.frame = Frame(self.tk)
+        self.tk.configure(bg=BG)
+
+        # Style the combobox dropdown list (must happen before any Combobox is created)
+        self.tk.option_add("*TCombobox*Listbox.background",       PANEL)
+        self.tk.option_add("*TCombobox*Listbox.foreground",       TEXT)
+        self.tk.option_add("*TCombobox*Listbox.selectBackground", ACCENT)
+        self.tk.option_add("*TCombobox*Listbox.selectForeground", BG)
+
+        # Invisible compatibility frame (kept for parity with original)
+        self.frame = Frame(self.tk, bg=BG)
         self.frame.pack()
+
         self.state = False
         self.tk.bind("<F11>", self.toggle_fullscreen)
         self.tk.bind("<Escape>", self.end_fullscreen)
-        self.tk.title("Prototype 1")
-        # Set the window size to 1000x700 pixels and then position it in the
-        # centre of the screen using a small helper.  Using `tk::PlaceWindow`
-        # works on most platforms but calculating the offsets ourselves is a
-        # bit more portable and gives us control over the geometry string.
+        self.tk.title("Forensic Artefact Extractor")
+
         width, height = 1000, 700
         self.tk.geometry(f"{width}x{height}")
         self._center_window(width, height)
-        self.taskbar = Frame(self.tk, bg='lightgrey', height=30)
-        self.taskbar.pack(side=TOP, fill=X)
 
-        btn_arsenal = Button(self.taskbar, text='Select File', command=self.store_drives_and_mount)
-        btn_arsenal.pack(side=LEFT, padx=5, pady=5)
+        self._apply_styles()
+        self._build_header()
+        self._build_toolbar()
 
-        btn_view_artefacts = Button(self.taskbar, text='View Artefacts', command=self.view_artefacts_folder)
-        btn_view_artefacts.pack(side=LEFT, padx=5, pady=5)
+        # Status bar must be packed from BOTTOM before the expanding content frame
+        self._build_status_bar()
 
-        # Frame for artefact viewing (fills below taskbar)
-        self.artefact_frame = Frame(self.tk)
+        Frame(self.tk, bg=BORDER, height=1).pack(fill=X)
+        self.artefact_frame = Frame(self.tk, bg=BG)
         self.artefact_frame.pack(side=TOP, fill=BOTH, expand=True)
+
+        self._show_welcome()
+
+    # ── Style sheet ──────────────────────────────────────────────────────────
+
+    def _apply_styles(self):
+        style = ttk.Style(self.tk)
+        style.theme_use("clam")
+
+        style.configure("TCombobox",
+            fieldbackground=PANEL, background=BTN_BG,
+            foreground=TEXT, selectbackground=ACCENT, selectforeground=BG,
+            arrowcolor=TEXT, bordercolor=BORDER,
+            lightcolor=BORDER, darkcolor=BORDER, font=FONT_MAIN)
+        style.map("TCombobox",
+            fieldbackground=[("readonly", PANEL)],
+            selectbackground=[("readonly", ACCENT)],
+            foreground=[("readonly", TEXT)])
+
+        style.configure("Treeview",
+            background=PANEL, foreground=TEXT,
+            fieldbackground=PANEL, rowheight=26, font=FONT_MAIN)
+        style.configure("Treeview.Heading",
+            background=BTN_BG, foreground=ACCENT,
+            relief="flat", font=("Segoe UI", 9, "bold"))
+        style.map("Treeview",
+            background=[("selected", ACCENT)],
+            foreground=[("selected", BG)])
+        style.map("Treeview.Heading",
+            background=[("active", BTN_HOVER)])
+
+        style.configure("Vertical.TScrollbar",
+            background=BTN_BG, troughcolor=BG,
+            arrowcolor=TEXT_DIM, bordercolor=BORDER)
+        style.configure("Horizontal.TScrollbar",
+            background=BTN_BG, troughcolor=BG,
+            arrowcolor=TEXT_DIM, bordercolor=BORDER)
+
+        style.configure("TProgressbar",
+            background=ACCENT, troughcolor=PANEL,
+            bordercolor=BORDER, thickness=10)
+
+        style.configure("TNotebook",
+            background=BG, borderwidth=0, tabmargins=[2, 6, 2, 0])
+        style.configure("TNotebook.Tab",
+            background=BTN_BG, foreground=TEXT_DIM,
+            padding=[18, 8], borderwidth=0, font=FONT_MAIN)
+        style.map("TNotebook.Tab",
+            background=[("selected", PANEL), ("active", BTN_HOVER)],
+            foreground=[("selected", ACCENT), ("active", TEXT)])
+
+    # ── Layout builders ───────────────────────────────────────────────────────
+
+    def _build_header(self):
+        header = Frame(self.tk, bg=TOOLBAR, height=65)
+        header.pack(side=TOP, fill=X)
+        header.pack_propagate(False)
+
+        title_block = Frame(header, bg=TOOLBAR)
+        title_block.pack(side=LEFT, fill=Y, padx=20, pady=8)
+        Label(title_block, text="FORENSIC ARTEFACT EXTRACTOR",
+              font=FONT_TITLE, bg=TOOLBAR, fg=TEXT).pack(anchor=W)
+        Label(title_block, text="Browser History Analysis & Evidence Collection",
+              font=FONT_SUB, bg=TOOLBAR, fg=TEXT_DIM).pack(anchor=W)
+
+        Label(header, text="v1.0  |  Prototype",
+              font=FONT_SUB, bg=TOOLBAR, fg=TEXT_DIM).pack(side=RIGHT, padx=20)
+
+        # Thin accent line beneath header
+        Frame(self.tk, bg=ACCENT, height=2).pack(fill=X)
+
+    def _build_toolbar(self):
+        toolbar = Frame(self.tk, bg=PANEL, height=50)
+        toolbar.pack(side=TOP, fill=X)
+        toolbar.pack_propagate(False)
+
+        Label(toolbar, text="Actions:", font=FONT_SUB,
+              bg=PANEL, fg=TEXT_DIM).pack(side=LEFT, padx=(15, 5))
+
+        self._make_btn(toolbar, "Select & Process File",
+                       self.store_drives_and_mount).pack(side=LEFT, padx=5, pady=10)
+        self._make_btn(toolbar, "View Artefacts",
+                       self.view_artefacts_folder).pack(side=LEFT, padx=5, pady=10)
+        self._make_btn(toolbar, "Private Browsing Artefacts",
+                       self.view_private_artefacts).pack(side=LEFT, padx=5, pady=10)
+
+    def _build_status_bar(self):
+        Frame(self.tk, bg=BORDER, height=1).pack(side=BOTTOM, fill=X)
+        bar = Frame(self.tk, bg=TOOLBAR, height=26)
+        bar.pack(side=BOTTOM, fill=X)
+        bar.pack_propagate(False)
+
+        self.status_var = StringVar(value="Ready")
+        Label(bar, textvariable=self.status_var,
+              font=FONT_SUB, bg=TOOLBAR, fg=TEXT_DIM, anchor=W
+              ).pack(side=LEFT, padx=12, fill=Y)
+        Label(bar, text="F11 — toggle fullscreen  |  Esc — exit fullscreen",
+              font=FONT_SUB, bg=TOOLBAR, fg=TEXT_DIM
+              ).pack(side=RIGHT, padx=12)
+
+    def _show_welcome(self):
+        self.clear_artefact_frame()
+        wrap = Frame(self.artefact_frame, bg=BG)
+        wrap.pack(expand=True)
+
+        Label(wrap, text="Welcome to Forensic Artefact Extractor",
+              font=("Segoe UI", 16, "bold"), bg=BG, fg=TEXT).pack(pady=(60, 6))
+        Label(wrap,
+              text="Select and process an E01 image, or load a previously extracted artefacts folder.",
+              font=FONT_MAIN, bg=BG, fg=TEXT_DIM).pack()
+
+        Frame(wrap, bg=BORDER, height=1, width=520).pack(pady=22)
+
+        for title, desc in [
+            ("Step 1  —  Select & Process File",
+             "Mount an E01 disk image and automatically extract browser history databases."),
+            ("Step 2  —  View Artefacts",
+             "Browse and inspect previously extracted browser history databases."),
+        ]:
+            card = Frame(wrap, bg=PANEL, padx=22, pady=14)
+            card.pack(fill=X, pady=5, ipadx=10, ipady=2)
+            Label(card, text=title, font=("Segoe UI", 10, "bold"),
+                  bg=PANEL, fg=ACCENT).pack(anchor=W)
+            Label(card, text=desc, font=FONT_SUB,
+                  bg=PANEL, fg=TEXT_DIM).pack(anchor=W, pady=(2, 0))
+
+    # ── Widget factory helpers ────────────────────────────────────────────────
+
+    def _make_btn(self, parent, text, command):
+        btn = Button(parent, text=text, command=command,
+                     bg=BTN_BG, fg=TEXT, relief=FLAT,
+                     font=FONT_MAIN, padx=14, pady=5,
+                     cursor="hand2", borderwidth=0,
+                     activebackground=BTN_HOVER, activeforeground=TEXT)
+        btn.bind("<Enter>", lambda _: btn.config(bg=BTN_HOVER))
+        btn.bind("<Leave>", lambda _: btn.config(bg=BTN_BG))
+        return btn
+
+    def _section_row(self, parent):
+        """Styled horizontal controls strip."""
+        Frame(parent, bg=BORDER, height=1).pack(fill=X)
+        row = Frame(parent, bg=PANEL)
+        row.pack(fill=X)
+        inner = Frame(row, bg=PANEL)
+        inner.pack(fill=X, padx=15, pady=10)
+        return inner
+
+    def _make_treeview(self, parent, columns):
+        """Treeview with vertical + horizontal scrollbars and row striping."""
+        container = Frame(parent, bg=BG)
+        container.pack(fill=BOTH, expand=True, padx=10, pady=(4, 10))
+
+        vsb = ttk.Scrollbar(container, orient="vertical")
+        hsb = ttk.Scrollbar(container, orient="horizontal")
+        tree = ttk.Treeview(container, columns=columns, show="headings",
+                            yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+        vsb.config(command=tree.yview)
+        hsb.config(command=tree.xview)
+
+        vsb.pack(side=RIGHT, fill=Y)
+        hsb.pack(side=BOTTOM, fill=X)
+        tree.pack(fill=BOTH, expand=True)
+
+        for col in columns:
+            tree.heading(col, text=col)
+            tree.column(col, width=150, minwidth=60, stretch=True)
+
+        tree.tag_configure("odd",  background="#12171f")
+        tree.tag_configure("even", background=PANEL)
+        return tree
+
+    def _show_private_browsing_warning(self, parent, indicators):
+        """
+        Displays an amber warning banner listing the artefact-pattern indicators
+        that suggest private/incognito browsing. The banner includes a forensic
+        caveat that this is inferential, not conclusive.
+        """
+        WARN_BG     = "#1f1a0e"
+        WARN_BORDER = "#d29922"
+        WARN_TEXT   = "#e3b341"
+        WARN_NOTE   = "#7a6528"
+
+        banner = Frame(parent, bg=WARN_BG, highlightbackground=WARN_BORDER,
+                       highlightthickness=1)
+        banner.pack(fill=X, padx=10, pady=(10, 0))
+
+        hdr = Frame(banner, bg=WARN_BG)
+        hdr.pack(fill=X, padx=14, pady=(10, 4))
+        Label(hdr,
+              text="[!]  POTENTIAL PRIVATE / INCOGNITO BROWSING DETECTED",
+              font=("Segoe UI", 10, "bold"), bg=WARN_BG, fg=WARN_TEXT
+              ).pack(side=LEFT)
+
+        for indicator in indicators:
+            Label(banner, text=f"      •  {indicator}",
+                  font=FONT_SUB, bg=WARN_BG, fg=WARN_TEXT,
+                  anchor=W, wraplength=900, justify=LEFT
+                  ).pack(fill=X, padx=14, pady=1)
+
+        Frame(banner, bg=WARN_BORDER, height=1).pack(fill=X, padx=14, pady=(8, 0))
+        Label(banner,
+              text="Forensic note:  Private browsing cannot be confirmed solely from "
+                   "disk artefacts. The indicators above identify inconsistencies "
+                   "characteristic of private sessions but cannot be treated as "
+                   "definitive proof. Corroborate with RAM analysis, DNS cache, "
+                   "or network logs where possible.",
+              font=("Segoe UI", 8), bg=WARN_BG, fg=WARN_NOTE,
+              wraplength=900, justify=LEFT, anchor=W
+              ).pack(fill=X, padx=14, pady=(4, 10))
+
+    def set_status(self, text):
+        self.status_var.set(text)
+        self.tk.update_idletasks()
+
+    # ── Feature: Private browsing artefacts ──────────────────────────────────
+
+    def view_private_artefacts(self):
+        """
+        Focused viewer for the on-disk artefacts that survive private/incognito
+        browsing — bookmarks, history, downloads — across every user/browser
+        profile in an extracted artefacts folder.
+        """
+        folder = filedialog.askdirectory(title="Select Extracted Artefacts Folder")
+        if not folder:
+            return
+        self.set_status(f"Scanning for private-browsing artefacts in: {folder}")
+
+        artefacts = discover_browser_artefact_files(folder)
+        self.clear_artefact_frame()
+
+        if not artefacts:
+            wrap = Frame(self.artefact_frame, bg=BG)
+            wrap.pack(expand=True)
+            Label(wrap,
+                  text="No browser profiles found in the selected folder.",
+                  font=FONT_MAIN, bg=BG, fg=TEXT_DIM).pack(pady=30)
+            self.set_status("No browser profiles found.")
+            return
+
+        self._build_private_artefact_view(artefacts)
+        self.set_status(
+            f"Loaded {len(artefacts)} user/browser profile(s).")
+
+    def _build_private_artefact_view(self, artefacts):
+        # Panel header
+        hdr = Frame(self.artefact_frame, bg=PANEL, height=44)
+        hdr.pack(fill=X)
+        hdr.pack_propagate(False)
+        Label(hdr, text="Private Browsing Artefacts",
+              font=FONT_HEAD, bg=PANEL, fg=TEXT
+              ).pack(side=LEFT, padx=15, pady=10)
+        Label(hdr,
+              text="Bookmarks, history & downloads recovered from non-volatile storage",
+              font=FONT_SUB, bg=PANEL, fg=TEXT_DIM
+              ).pack(side=RIGHT, padx=15, pady=10)
+
+        # Profile selector
+        ctrl = self._section_row(self.artefact_frame)
+        Label(ctrl, text="Profile:", font=FONT_SUB, bg=PANEL, fg=TEXT_DIM
+              ).pack(side=LEFT, padx=(0, 6))
+
+        profile_keys   = sorted(artefacts.keys())
+        profile_labels = [f"{u}    /    {b}" for u, b in profile_keys]
+        label_to_key   = dict(zip(profile_labels, profile_keys))
+        profile_var    = StringVar(value=profile_labels[0])
+        profile_cb = ttk.Combobox(ctrl, textvariable=profile_var,
+                                  values=profile_labels,
+                                  state="readonly", width=44)
+        profile_cb.pack(side=LEFT)
+
+        # Tabbed content
+        nb_wrap = Frame(self.artefact_frame, bg=BG)
+        nb_wrap.pack(fill=BOTH, expand=True, padx=10, pady=(8, 10))
+
+        notebook = ttk.Notebook(nb_wrap)
+        notebook.pack(fill=BOTH, expand=True)
+
+        bm_tab   = Frame(notebook, bg=BG)
+        hist_tab = Frame(notebook, bg=BG)
+        dl_tab   = Frame(notebook, bg=BG)
+        notebook.add(bm_tab,   text="  Bookmarks  ")
+        notebook.add(hist_tab, text="  History  ")
+        notebook.add(dl_tab,   text="  Downloads  ")
+
+        def load_profile(*_):
+            key = label_to_key.get(profile_var.get())
+            if not key:
+                return
+            files = artefacts[key]
+            user, browser = key
+            self._populate_bookmarks_tab(bm_tab, files)
+            self._populate_history_tab(hist_tab, files)
+            self._populate_downloads_tab(dl_tab, files, browser)
+            self.set_status(f"Showing private-browsing artefacts: {user} / {browser}")
+
+        profile_cb.bind("<<ComboboxSelected>>", load_profile)
+        load_profile()
+
+    def _populate_bookmarks_tab(self, parent, files):
+        for w in parent.winfo_children():
+            w.destroy()
+
+        rows = []
+        if "bookmarks_json" in files:
+            rows = parse_chromium_bookmarks(files["bookmarks_json"])
+        elif "places_db" in files:
+            rows = parse_firefox_bookmarks(files["places_db"])
+
+        if not rows:
+            Label(parent,
+                  text="No bookmarks found for this profile.",
+                  font=FONT_MAIN, bg=BG, fg=TEXT_DIM
+                  ).pack(pady=30)
+            return
+
+        Label(parent,
+              text=f"{len(rows)} bookmark(s)  —  bookmarks persist through private mode",
+              font=FONT_SUB, bg=BG, fg=TEXT_DIM, anchor=W
+              ).pack(fill=X, padx=12, pady=(8, 0))
+
+        tree = self._make_treeview(parent, ("Title", "URL", "Date Added"))
+        tree.column("Title",      width=300, minwidth=120)
+        tree.column("URL",        width=420, minwidth=120)
+        tree.column("Date Added", width=160, minwidth=120, stretch=False)
+        for i, row in enumerate(rows):
+            tree.insert("", END, values=row,
+                        tags=("odd" if i % 2 else "even",))
+
+    def _populate_history_tab(self, parent, files):
+        for w in parent.winfo_children():
+            w.destroy()
+
+        rows = []
+        if "history_db" in files:
+            rows = parse_chromium_history(files["history_db"])
+        elif "places_db" in files:
+            rows = parse_firefox_history(files["places_db"])
+
+        if not rows:
+            Label(parent,
+                  text="No browsing history recovered.\n"
+                       "Most browsers suppress history writes during private mode "
+                       "— this absence is itself a forensic indicator.",
+                  font=FONT_MAIN, bg=BG, fg=TEXT_DIM, justify=LEFT
+                  ).pack(pady=30)
+            return
+
+        Label(parent,
+              text=f"{len(rows)} history entry(ies)  —  most browsers suppress this in private mode",
+              font=FONT_SUB, bg=BG, fg=TEXT_DIM, anchor=W
+              ).pack(fill=X, padx=12, pady=(8, 0))
+
+        tree = self._make_treeview(
+            parent, ("Title", "URL", "Visits", "Last Visited"))
+        tree.column("Title",        width=280, minwidth=120)
+        tree.column("URL",          width=400, minwidth=120)
+        tree.column("Visits",       width=70,  minwidth=50,  stretch=False)
+        tree.column("Last Visited", width=160, minwidth=120, stretch=False)
+        for i, row in enumerate(rows):
+            tree.insert("", END, values=row,
+                        tags=("odd" if i % 2 else "even",))
+
+    def _populate_downloads_tab(self, parent, files, browser):
+        for w in parent.winfo_children():
+            w.destroy()
+
+        rows = []
+        if "history_db" in files:
+            rows = parse_chromium_downloads(files["history_db"])
+
+        if not rows:
+            if browser.lower() == "firefox":
+                msg = ("Firefox stores download metadata in moz_annos / a separate "
+                       "downloads.sqlite, which is not parsed here.\n"
+                       "The actual downloaded files themselves persist on disk regardless of private mode.")
+            else:
+                msg = "No download records found in this profile's History database."
+            Label(parent, text=msg,
+                  font=FONT_MAIN, bg=BG, fg=TEXT_DIM, justify=LEFT
+                  ).pack(pady=30, padx=20)
+            return
+
+        Label(parent,
+              text=f"{len(rows)} download(s)  —  downloaded files persist regardless "
+                   "of private mode",
+              font=FONT_SUB, bg=BG, fg=TEXT_DIM, anchor=W
+              ).pack(fill=X, padx=12, pady=(8, 0))
+
+        tree = self._make_treeview(
+            parent, ("File", "Source URL", "Size (bytes)", "Started"))
+        tree.column("File",         width=260, minwidth=120)
+        tree.column("Source URL",   width=380, minwidth=120)
+        tree.column("Size (bytes)", width=110, minwidth=80,  stretch=False)
+        tree.column("Started",      width=160, minwidth=120, stretch=False)
+        for i, row in enumerate(rows):
+            tree.insert("", END, values=row,
+                        tags=("odd" if i % 2 else "even",))
+
+    # ── Feature: View artefacts folder ───────────────────────────────────────
 
     def view_artefacts_folder(self):
         folder = filedialog.askdirectory(title="Select Extracted Artefacts Folder")
         if not folder:
             return
-        # List immediate subfolders as usernames
+        self.set_status(f"Loading artefacts from: {folder}")
+
         user_browser_map = {}
         try:
-            usernames = [d for d in os.listdir(folder) if os.path.isdir(os.path.join(folder, d))]
+            usernames = [d for d in os.listdir(folder)
+                         if os.path.isdir(os.path.join(folder, d))]
         except Exception:
             usernames = []
+
         for username in usernames:
             user_path = os.path.join(folder, username)
             browser_map = {}
             for root, dirs, files in os.walk(user_path):
+                # Extracted output is structured as username/BrowserName/...
+                # so the first component below user_path is always the browser name.
+                rel = os.path.relpath(root, user_path)
+                browser_dir = rel.split(os.sep)[0]
+                if browser_dir == '.':
+                    continue
                 for file in files:
                     lower_file = file.lower()
-                    browser = None
-                    if lower_file == "history":
-                        if "chrome" in root.lower():
-                            browser = "Chrome"
-                        elif "edge" in root.lower():
-                            browser = "Edge"
-                        else:
-                            browser = "Chrome"
-                    elif lower_file == "places.sqlite":
-                        browser = "Firefox"
-                    if browser:
-                        browser_map[browser] = os.path.join(root, file)
+                    if lower_file in ("history", "places.sqlite"):
+                        browser_map[browser_dir] = os.path.join(root, file)
             if browser_map:
                 user_browser_map[username] = browser_map
+
         self.clear_artefact_frame()
         if not user_browser_map:
-            Label(self.artefact_frame, text="No browser history databases found in the selected folder.").pack(padx=10, pady=10)
+            wrap = Frame(self.artefact_frame, bg=BG)
+            wrap.pack(expand=True)
+            Label(wrap, text="No browser history databases found in the selected folder.",
+                  font=FONT_MAIN, bg=BG, fg=TEXT_DIM).pack(pady=30)
+            self.set_status("No browser history found.")
             return
+
+        self.set_status(f"Found {len(user_browser_map)} user(s) with browser history.")
         self.show_user_dropdown(user_browser_map)
 
     def show_user_dropdown(self, user_browser_map):
         self.clear_artefact_frame()
-        Label(self.artefact_frame, text="Select a user to view:").pack(padx=10, pady=10)
-        user_names = list(user_browser_map.keys())
-        user_var = StringVar()
-        user_var.set(user_names[0])
-        user_dropdown = ttk.Combobox(self.artefact_frame, textvariable=user_var, values=user_names, state="readonly")
-        user_dropdown.pack(padx=10, pady=5)
 
-        # Frame for browser and table selection/data
-        browser_table_frame = Frame(self.artefact_frame)
+        # Panel header strip
+        hdr = Frame(self.artefact_frame, bg=PANEL, height=40)
+        hdr.pack(fill=X)
+        hdr.pack_propagate(False)
+        Label(hdr, text="Browser Artefact Viewer",
+              font=FONT_HEAD, bg=PANEL, fg=TEXT).pack(side=LEFT, padx=15, pady=10)
+
+        # User selector row
+        ctrl = self._section_row(self.artefact_frame)
+        Label(ctrl, text="User:", font=FONT_SUB, bg=PANEL, fg=TEXT_DIM
+              ).pack(side=LEFT, padx=(0, 6))
+        user_names = list(user_browser_map.keys())
+        user_var = StringVar(value=user_names[0])
+        user_cb = ttk.Combobox(ctrl, textvariable=user_var, values=user_names,
+                               state="readonly", width=28)
+        user_cb.pack(side=LEFT)
+
+        browser_table_frame = Frame(self.artefact_frame, bg=BG)
         browser_table_frame.pack(fill=BOTH, expand=True)
 
         def show_selected_user(*args):
-            for widget in browser_table_frame.winfo_children():
-                widget.destroy()
-            browser_map = user_browser_map[user_var.get()]
-            self.show_browser_dropdown(browser_map, browser_table_frame)
+            for w in browser_table_frame.winfo_children():
+                w.destroy()
+            self.show_browser_dropdown(user_browser_map[user_var.get()], browser_table_frame)
+            self.set_status(f"Viewing user: {user_var.get()}")
 
-        user_dropdown.bind("<<ComboboxSelected>>", show_selected_user)
+        user_cb.bind("<<ComboboxSelected>>", show_selected_user)
         show_selected_user()
 
     def show_browser_dropdown(self, browser_map, parent_frame):
-        Label(parent_frame, text="Select a browser to view:").pack(padx=10, pady=10)
+        ctrl = self._section_row(parent_frame)
+        Label(ctrl, text="Browser:", font=FONT_SUB, bg=PANEL, fg=TEXT_DIM
+              ).pack(side=LEFT, padx=(0, 6))
         browser_names = list(browser_map.keys())
-        browser_var = StringVar()
-        browser_var.set(browser_names[0])
-        dropdown = ttk.Combobox(parent_frame, textvariable=browser_var, values=browser_names, state="readonly")
-        dropdown.pack(padx=10, pady=5)
+        browser_var = StringVar(value=browser_names[0])
+        browser_cb = ttk.Combobox(ctrl, textvariable=browser_var, values=browser_names,
+                                  state="readonly", width=22)
+        browser_cb.pack(side=LEFT)
 
-        # Frame for table selection and data
-        db_view_frame = Frame(parent_frame)
+        db_view_frame = Frame(parent_frame, bg=BG)
         db_view_frame.pack(fill=BOTH, expand=True)
 
         def show_selected_browser(*args):
-            for widget in db_view_frame.winfo_children():
-                widget.destroy()
-            db_path = browser_map[browser_var.get()]
+            for w in db_view_frame.winfo_children():
+                w.destroy()
+            browser_name = browser_var.get()
+            db_path = browser_map[browser_name]
+            flagged, indicators = check_private_browsing_indicators(db_path, browser_name)
+            if flagged:
+                self._show_private_browsing_warning(db_view_frame, indicators)
             self.show_database_tables(db_path, db_view_frame)
+            self.set_status(f"Browser: {browser_name}")
 
-        dropdown.bind("<<ComboboxSelected>>", show_selected_browser)
+        browser_cb.bind("<<ComboboxSelected>>", show_selected_browser)
         show_selected_browser()
 
     def show_database_tables(self, db_path, parent_frame):
         import sqlite3
-        # Get all table names
         try:
             conn = sqlite3.connect(db_path)
             cur = conn.cursor()
@@ -127,57 +577,58 @@ class Fullscreen_Window:
             tables = [row[0] for row in cur.fetchall()]
             conn.close()
         except Exception as e:
-            Label(parent_frame, text=f"Could not read database tables: {e}").pack()
+            Label(parent_frame, text=f"Could not read database tables: {e}",
+                  font=FONT_MAIN, bg=BG, fg=TEXT_DIM).pack(pady=20)
             return
         if not tables:
-            Label(parent_frame, text="No tables found in database.").pack()
+            Label(parent_frame, text="No tables found in database.",
+                  font=FONT_MAIN, bg=BG, fg=TEXT_DIM).pack(pady=20)
             return
 
-        # Dropdown to select table
-        table_var = StringVar()
-        table_var.set(tables[0])
-        dropdown = ttk.Combobox(parent_frame, textvariable=table_var, values=tables, state="readonly")
-        dropdown.pack(padx=10, pady=5)
+        ctrl = self._section_row(parent_frame)
+        Label(ctrl, text="Table:", font=FONT_SUB, bg=PANEL, fg=TEXT_DIM
+              ).pack(side=LEFT, padx=(0, 6))
+        table_var = StringVar(value=tables[0])
+        table_cb = ttk.Combobox(ctrl, textvariable=table_var, values=tables,
+                                state="readonly", width=32)
+        table_cb.pack(side=LEFT)
 
-        # Frame for table view
-        table_view_frame = Frame(parent_frame)
+        table_view_frame = Frame(parent_frame, bg=BG)
         table_view_frame.pack(fill=BOTH, expand=True)
 
         def show_table(table_name):
-            for widget in table_view_frame.winfo_children():
-                widget.destroy()
+            for w in table_view_frame.winfo_children():
+                w.destroy()
             try:
                 conn = sqlite3.connect(db_path)
                 cur = conn.cursor()
                 cur.execute(f"PRAGMA table_info({table_name})")
                 columns = [row[1] for row in cur.fetchall()]
                 if not columns:
-                    Label(table_view_frame, text="No columns found.").pack()
+                    Label(table_view_frame, text="No columns found.",
+                          font=FONT_MAIN, bg=BG, fg=TEXT_DIM).pack(pady=20)
                     return
-                tree = ttk.Treeview(table_view_frame, columns=columns, show="headings")
-                for col in columns:
-                    tree.heading(col, text=col)
-                tree.pack(fill=BOTH, expand=True)
+                tree = self._make_treeview(table_view_frame, columns)
                 cur.execute(f"SELECT * FROM {table_name} LIMIT 100")
-                for row in cur.fetchall():
-                    tree.insert("", END, values=row)
+                for i, row in enumerate(cur.fetchall()):
+                    tree.insert("", END, values=row,
+                                tags=("odd" if i % 2 else "even",))
                 conn.close()
+                self.set_status(f"Table '{table_name}'  —  showing up to 100 rows")
             except Exception as e:
-                Label(table_view_frame, text=f"Could not read table: {e}").pack()
+                Label(table_view_frame, text=f"Could not read table: {e}",
+                      font=FONT_MAIN, bg=BG, fg=TEXT_DIM).pack(pady=20)
 
+        table_cb.bind("<<ComboboxSelected>>", lambda _: show_table(table_var.get()))
         show_table(tables[0])
-
-        def on_table_change(event):
-            show_table(table_var.get())
-
-        dropdown.bind("<<ComboboxSelected>>", on_table_change)
 
     def view_history_database(self, db_path):
         import sqlite3
         self.clear_artefact_frame()
-        Label(self.artefact_frame, text=f"Database: {os.path.basename(db_path)}").pack(padx=10, pady=10)
+        Label(self.artefact_frame,
+              text=f"Database: {os.path.basename(db_path)}",
+              font=FONT_HEAD, bg=BG, fg=TEXT).pack(padx=15, pady=10, anchor=W)
 
-        # Get all table names
         try:
             conn = sqlite3.connect(db_path)
             cur = conn.cursor()
@@ -185,121 +636,135 @@ class Fullscreen_Window:
             tables = [row[0] for row in cur.fetchall()]
             conn.close()
         except Exception as e:
-            Label(self.artefact_frame, text=f"Could not read database tables: {e}").pack()
+            Label(self.artefact_frame, text=f"Could not read database tables: {e}",
+                  font=FONT_MAIN, bg=BG, fg=TEXT_DIM).pack()
             return
         if not tables:
-            Label(self.artefact_frame, text="No tables found in database.").pack()
+            Label(self.artefact_frame, text="No tables found in database.",
+                  font=FONT_MAIN, bg=BG, fg=TEXT_DIM).pack()
             return
 
-        # Dropdown to select table
-        table_var = StringVar()
-        table_var.set(tables[0])
-        dropdown = ttk.Combobox(self.artefact_frame, textvariable=table_var, values=tables, state="readonly")
-        dropdown.pack(padx=10, pady=5)
+        ctrl = Frame(self.artefact_frame, bg=PANEL)
+        ctrl.pack(fill=X, padx=0)
+        Frame(ctrl, bg=BORDER, height=1).pack(fill=X)
+        inner = Frame(ctrl, bg=PANEL)
+        inner.pack(fill=X, padx=15, pady=10)
+        Label(inner, text="Table:", font=FONT_SUB, bg=PANEL, fg=TEXT_DIM
+              ).pack(side=LEFT, padx=(0, 6))
+        table_var = StringVar(value=tables[0])
+        table_cb = ttk.Combobox(inner, textvariable=table_var, values=tables,
+                                state="readonly", width=32)
+        table_cb.pack(side=LEFT)
 
-        # Frame for table view
-        table_view_frame = Frame(self.artefact_frame)
+        table_view_frame = Frame(self.artefact_frame, bg=BG)
         table_view_frame.pack(fill=BOTH, expand=True)
 
         def show_table(table_name):
-            # Clear previous table view
-            for widget in table_view_frame.winfo_children():
-                widget.destroy()
+            for w in table_view_frame.winfo_children():
+                w.destroy()
             try:
                 conn = sqlite3.connect(db_path)
                 cur = conn.cursor()
-                # Get columns
                 cur.execute(f"PRAGMA table_info({table_name})")
                 columns = [row[1] for row in cur.fetchall()]
                 if not columns:
-                    Label(table_view_frame, text="No columns found.").pack()
+                    Label(table_view_frame, text="No columns found.",
+                          font=FONT_MAIN, bg=BG, fg=TEXT_DIM).pack()
                     return
-                tree = ttk.Treeview(table_view_frame, columns=columns, show="headings")
-                for col in columns:
-                    tree.heading(col, text=col)
-                tree.pack(fill=BOTH, expand=True)
-                # Get up to 100 rows
+                tree = self._make_treeview(table_view_frame, columns)
                 cur.execute(f"SELECT * FROM {table_name} LIMIT 100")
-                for row in cur.fetchall():
-                    tree.insert("", END, values=row)
+                for i, row in enumerate(cur.fetchall()):
+                    tree.insert("", END, values=row,
+                                tags=("odd" if i % 2 else "even",))
                 conn.close()
             except Exception as e:
-                Label(table_view_frame, text=f"Could not read table: {e}").pack()
+                Label(table_view_frame, text=f"Could not read table: {e}",
+                      font=FONT_MAIN, bg=BG, fg=TEXT_DIM).pack()
 
-        # Initial table display
+        table_cb.bind("<<ComboboxSelected>>", lambda _: show_table(table_var.get()))
         show_table(tables[0])
 
-        def on_table_change(event):
-            show_table(table_var.get())
-
-        dropdown.bind("<<ComboboxSelected>>", on_table_change)
+    # ── Utility ───────────────────────────────────────────────────────────────
 
     def clear_artefact_frame(self):
         for widget in self.artefact_frame.winfo_children():
             widget.destroy()
 
+    # ── Feature: Mount & extract ──────────────────────────────────────────────
+
     def store_drives_and_mount(self):
+        self.set_status("Storing drive list and launching Arsenal Image Mounter...")
         self.drives_before_mount = list_all_drives()
         mount_e01_arsenal(self)
-        # Pass a callback to unmount after extraction completes
+        time.sleep(10)
         self.extract_artefacts_mounted_gui(lambda: unmount_arsenal(self))
 
-
     def extract_artefacts_mounted_gui(self, on_complete=None):
-        # Use the drives stored at mount time as the 'before' set
         drives_before = getattr(self, 'drives_before_mount', None)
         if drives_before is None:
             messagebox.showinfo("Info", "Please use the 'Mount E01' button before extracting artefacts.")
             return
-        messagebox.showinfo("Mount Image", "If you haven't already, mount your E01 image now using Arsenal Image Mounter, then click OK.")
+        messagebox.showinfo("Mount Image",
+            "If you haven't already, mount your E01 image now using Arsenal Image Mounter, then click OK.")
         drives_after = list_all_drives()
         new_drives = drives_after - drives_before
         if not new_drives:
-            messagebox.showerror("No New Drive Detected", "No new drive was detected. Please ensure the image is mounted.")
+            messagebox.showerror("No New Drive Detected",
+                "No new drive was detected. Please ensure the image is mounted.")
             return
-        # If more than one new drive, prompt user to select
+
         user_folders = ["Users", "Documents", "Users\Public", "Users\Default"]
         drive_options = []
         for drive in sorted(new_drives):
-            found_user_data = False
-            for folder in user_folders:
-                if os.path.exists(os.path.join(drive, folder)):
-                    found_user_data = True
-                    break
+            found_user_data = any(
+                os.path.exists(os.path.join(drive, f)) for f in user_folders)
             drive_options.append((drive, found_user_data))
 
-        # Automatically select the drive with user folders
-        drives_with_user_data = [drive for drive, found in drive_options if found]
+        drives_with_user_data = [d for d, found in drive_options if found]
         if drives_with_user_data:
             selected_drive = drives_with_user_data[0]
         else:
-            # If none found, fallback to first drive and warn user
             selected_drive = drive_options[0][0]
-            if not messagebox.askyesno("Drive Check", f"No user folders detected on any new drive. Continue with {selected_drive}?"):
+            if not messagebox.askyesno("Drive Check",
+                    f"No user folders detected on any new drive. Continue with {selected_drive}?"):
                 return
-        # Step 3: Check for user folders (e.g., Users, Documents) on selected drive
-        found_user_data = False
-        for folder in user_folders:
-            if os.path.exists(os.path.join(selected_drive, folder)):
-                found_user_data = True
-                break
+
+        found_user_data = any(
+            os.path.exists(os.path.join(selected_drive, f)) for f in user_folders)
         if not found_user_data:
-            if not messagebox.askyesno("Drive Check", f"The selected drive ({selected_drive}) does not appear to contain typical user folders. Continue anyway?"):
+            if not messagebox.askyesno("Drive Check",
+                    f"The selected drive ({selected_drive}) does not appear to contain typical "
+                    f"user folders. Continue anyway?"):
                 return
-        # Step 4: Prompt for output folder
+
         output_dir = filedialog.askdirectory(title="Select Output Directory for Artefacts")
         if not output_dir:
             return
-        # Step 5: Create a subfolder for this extraction
-        import datetime
-        session_folder = os.path.join(output_dir, f"artefacts_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}")
+
+        import datetime, threading
+        session_folder = os.path.join(
+            output_dir,
+            f"artefacts_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}")
         os.makedirs(session_folder, exist_ok=True)
-        import threading
+
+        # ── Styled progress dialog ────────────────────────────────────────────
         progress = Toplevel(self.tk)
         progress.title("Extracting Artefacts")
-        Label(progress, text="Extracting browser artefacts...").pack(padx=10, pady=10)
-        pb = ttk.Progressbar(progress, orient="horizontal", length=400, mode="determinate")
-        pb.pack(padx=10, pady=10)
+        progress.configure(bg=BG)
+        progress.resizable(False, False)
+        progress.grab_set()
+        pw, ph = 480, 160
+        px = self.tk.winfo_x() + (1000 - pw) // 2
+        py = self.tk.winfo_y() + (700  - ph) // 2
+        progress.geometry(f"{pw}x{ph}+{px}+{py}")
+
+        Frame(progress, bg=ACCENT, height=3).pack(fill=X)
+        Label(progress, text="Extracting Browser Artefacts",
+              font=FONT_HEAD, bg=BG, fg=TEXT).pack(pady=(18, 4))
+        Label(progress, text="Please wait while databases are being copied...",
+              font=FONT_SUB, bg=BG, fg=TEXT_DIM).pack()
+        pb = ttk.Progressbar(progress, orient="horizontal", length=420, mode="determinate")
+        pb.pack(padx=30, pady=16)
         pb['value'] = 0
         pb['maximum'] = 1
         progress.update()
@@ -313,27 +778,35 @@ class Fullscreen_Window:
 
         def do_extraction():
             try:
-                artefacts, failed = extract_browser_artefacts_from_mounted(selected_drive, session_folder, progress_callback, fail_log_path)
+                artefacts, failed = extract_browser_artefacts_from_mounted(
+                    selected_drive, session_folder, progress_callback, fail_log_path)
             except Exception as e:
                 artefacts, failed = [], 0
                 with open(fail_log_path, 'a', encoding='utf-8') as flog:
                     flog.write(f"Critical error: {e}\n")
             progress.destroy()
             if artefacts:
-                msg = f"Found and copied {len(artefacts)} artefact(s).\nFailed to copy: {failed}\nSee: {session_folder}"
+                msg = (f"Found and copied {len(artefacts)} artefact(s).\n"
+                       f"Failed to copy: {failed}\nSee: {session_folder}")
                 if failed:
-                    msg += f"\nSee failed_copies.txt for details."
+                    msg += "\nSee failed_copies.txt for details."
                 self.tk.after(0, lambda: messagebox.showinfo("Extraction Complete", msg))
+                self.tk.after(0, lambda: self.set_status(
+                    f"Extraction complete — {len(artefacts)} artefact(s) saved."))
             else:
-                self.tk.after(0, lambda: messagebox.showinfo("No Artefacts Found", "No browser artefacts were found in the mounted drive."))
-            # Call the on_complete callback if provided
+                self.tk.after(0, lambda: messagebox.showinfo(
+                    "No Artefacts Found",
+                    "No browser artefacts were found in the mounted drive."))
+                self.tk.after(0, lambda: self.set_status("No artefacts found."))
             if on_complete:
                 self.tk.after(0, on_complete)
 
         threading.Thread(target=do_extraction, daemon=True).start()
 
+    # ── Window controls ───────────────────────────────────────────────────────
+
     def toggle_fullscreen(self, event=None):
-        self.state = not self.state  # Just toggling the boolean
+        self.state = not self.state
         self.tk.attributes("-fullscreen", self.state)
         return "break"
 
@@ -349,6 +822,7 @@ class Fullscreen_Window:
         self.state = False
         self.tk.attributes("-fullscreen", False)
         return "break"
+
 
 def Create_Window():
     w = Fullscreen_Window()
