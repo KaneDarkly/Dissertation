@@ -6,12 +6,6 @@ from OpenFile import mount_e01_arsenal, unmount_arsenal
 from Extract_Arefacts import extract_browser_artefacts_from_mounted
 from drive_utils import list_all_drives
 from private_browsing_check import check_private_browsing_indicators
-from private_artefacts import (
-    discover_browser_artefact_files,
-    parse_chromium_bookmarks, parse_firefox_bookmarks,
-    parse_chromium_history,   parse_firefox_history,
-    parse_chromium_downloads,
-)
 import time
 
 # ── Colour palette ────────────────────────────────────────────────────────────
@@ -109,15 +103,6 @@ class Fullscreen_Window:
             background=ACCENT, troughcolor=PANEL,
             bordercolor=BORDER, thickness=10)
 
-        style.configure("TNotebook",
-            background=BG, borderwidth=0, tabmargins=[2, 6, 2, 0])
-        style.configure("TNotebook.Tab",
-            background=BTN_BG, foreground=TEXT_DIM,
-            padding=[18, 8], borderwidth=0, font=FONT_MAIN)
-        style.map("TNotebook.Tab",
-            background=[("selected", PANEL), ("active", BTN_HOVER)],
-            foreground=[("selected", ACCENT), ("active", TEXT)])
-
     # ── Layout builders ───────────────────────────────────────────────────────
 
     def _build_header(self):
@@ -150,8 +135,6 @@ class Fullscreen_Window:
                        self.store_drives_and_mount).pack(side=LEFT, padx=5, pady=10)
         self._make_btn(toolbar, "View Artefacts",
                        self.view_artefacts_folder).pack(side=LEFT, padx=5, pady=10)
-        self._make_btn(toolbar, "Private Browsing Artefacts",
-                       self.view_private_artefacts).pack(side=LEFT, padx=5, pady=10)
 
     def _build_status_bar(self):
         Frame(self.tk, bg=BORDER, height=1).pack(side=BOTTOM, fill=X)
@@ -280,190 +263,6 @@ class Fullscreen_Window:
     def set_status(self, text):
         self.status_var.set(text)
         self.tk.update_idletasks()
-
-    # ── Feature: Private browsing artefacts ──────────────────────────────────
-
-    def view_private_artefacts(self):
-        """
-        Focused viewer for the on-disk artefacts that survive private/incognito
-        browsing — bookmarks, history, downloads — across every user/browser
-        profile in an extracted artefacts folder.
-        """
-        folder = filedialog.askdirectory(title="Select Extracted Artefacts Folder")
-        if not folder:
-            return
-        self.set_status(f"Scanning for private-browsing artefacts in: {folder}")
-
-        artefacts = discover_browser_artefact_files(folder)
-        self.clear_artefact_frame()
-
-        if not artefacts:
-            wrap = Frame(self.artefact_frame, bg=BG)
-            wrap.pack(expand=True)
-            Label(wrap,
-                  text="No browser profiles found in the selected folder.",
-                  font=FONT_MAIN, bg=BG, fg=TEXT_DIM).pack(pady=30)
-            self.set_status("No browser profiles found.")
-            return
-
-        self._build_private_artefact_view(artefacts)
-        self.set_status(
-            f"Loaded {len(artefacts)} user/browser profile(s).")
-
-    def _build_private_artefact_view(self, artefacts):
-        # Panel header
-        hdr = Frame(self.artefact_frame, bg=PANEL, height=44)
-        hdr.pack(fill=X)
-        hdr.pack_propagate(False)
-        Label(hdr, text="Private Browsing Artefacts",
-              font=FONT_HEAD, bg=PANEL, fg=TEXT
-              ).pack(side=LEFT, padx=15, pady=10)
-        Label(hdr,
-              text="Bookmarks, history & downloads recovered from non-volatile storage",
-              font=FONT_SUB, bg=PANEL, fg=TEXT_DIM
-              ).pack(side=RIGHT, padx=15, pady=10)
-
-        # Profile selector
-        ctrl = self._section_row(self.artefact_frame)
-        Label(ctrl, text="Profile:", font=FONT_SUB, bg=PANEL, fg=TEXT_DIM
-              ).pack(side=LEFT, padx=(0, 6))
-
-        profile_keys   = sorted(artefacts.keys())
-        profile_labels = [f"{u}    /    {b}" for u, b in profile_keys]
-        label_to_key   = dict(zip(profile_labels, profile_keys))
-        profile_var    = StringVar(value=profile_labels[0])
-        profile_cb = ttk.Combobox(ctrl, textvariable=profile_var,
-                                  values=profile_labels,
-                                  state="readonly", width=44)
-        profile_cb.pack(side=LEFT)
-
-        # Tabbed content
-        nb_wrap = Frame(self.artefact_frame, bg=BG)
-        nb_wrap.pack(fill=BOTH, expand=True, padx=10, pady=(8, 10))
-
-        notebook = ttk.Notebook(nb_wrap)
-        notebook.pack(fill=BOTH, expand=True)
-
-        bm_tab   = Frame(notebook, bg=BG)
-        hist_tab = Frame(notebook, bg=BG)
-        dl_tab   = Frame(notebook, bg=BG)
-        notebook.add(bm_tab,   text="  Bookmarks  ")
-        notebook.add(hist_tab, text="  History  ")
-        notebook.add(dl_tab,   text="  Downloads  ")
-
-        def load_profile(*_):
-            key = label_to_key.get(profile_var.get())
-            if not key:
-                return
-            files = artefacts[key]
-            user, browser = key
-            self._populate_bookmarks_tab(bm_tab, files)
-            self._populate_history_tab(hist_tab, files)
-            self._populate_downloads_tab(dl_tab, files, browser)
-            self.set_status(f"Showing private-browsing artefacts: {user} / {browser}")
-
-        profile_cb.bind("<<ComboboxSelected>>", load_profile)
-        load_profile()
-
-    def _populate_bookmarks_tab(self, parent, files):
-        for w in parent.winfo_children():
-            w.destroy()
-
-        rows = []
-        if "bookmarks_json" in files:
-            rows = parse_chromium_bookmarks(files["bookmarks_json"])
-        elif "places_db" in files:
-            rows = parse_firefox_bookmarks(files["places_db"])
-
-        if not rows:
-            Label(parent,
-                  text="No bookmarks found for this profile.",
-                  font=FONT_MAIN, bg=BG, fg=TEXT_DIM
-                  ).pack(pady=30)
-            return
-
-        Label(parent,
-              text=f"{len(rows)} bookmark(s)  —  bookmarks persist through private mode",
-              font=FONT_SUB, bg=BG, fg=TEXT_DIM, anchor=W
-              ).pack(fill=X, padx=12, pady=(8, 0))
-
-        tree = self._make_treeview(parent, ("Title", "URL", "Date Added"))
-        tree.column("Title",      width=300, minwidth=120)
-        tree.column("URL",        width=420, minwidth=120)
-        tree.column("Date Added", width=160, minwidth=120, stretch=False)
-        for i, row in enumerate(rows):
-            tree.insert("", END, values=row,
-                        tags=("odd" if i % 2 else "even",))
-
-    def _populate_history_tab(self, parent, files):
-        for w in parent.winfo_children():
-            w.destroy()
-
-        rows = []
-        if "history_db" in files:
-            rows = parse_chromium_history(files["history_db"])
-        elif "places_db" in files:
-            rows = parse_firefox_history(files["places_db"])
-
-        if not rows:
-            Label(parent,
-                  text="No browsing history recovered.\n"
-                       "Most browsers suppress history writes during private mode "
-                       "— this absence is itself a forensic indicator.",
-                  font=FONT_MAIN, bg=BG, fg=TEXT_DIM, justify=LEFT
-                  ).pack(pady=30)
-            return
-
-        Label(parent,
-              text=f"{len(rows)} history entry(ies)  —  most browsers suppress this in private mode",
-              font=FONT_SUB, bg=BG, fg=TEXT_DIM, anchor=W
-              ).pack(fill=X, padx=12, pady=(8, 0))
-
-        tree = self._make_treeview(
-            parent, ("Title", "URL", "Visits", "Last Visited"))
-        tree.column("Title",        width=280, minwidth=120)
-        tree.column("URL",          width=400, minwidth=120)
-        tree.column("Visits",       width=70,  minwidth=50,  stretch=False)
-        tree.column("Last Visited", width=160, minwidth=120, stretch=False)
-        for i, row in enumerate(rows):
-            tree.insert("", END, values=row,
-                        tags=("odd" if i % 2 else "even",))
-
-    def _populate_downloads_tab(self, parent, files, browser):
-        for w in parent.winfo_children():
-            w.destroy()
-
-        rows = []
-        if "history_db" in files:
-            rows = parse_chromium_downloads(files["history_db"])
-
-        if not rows:
-            if browser.lower() == "firefox":
-                msg = ("Firefox stores download metadata in moz_annos / a separate "
-                       "downloads.sqlite, which is not parsed here.\n"
-                       "The actual downloaded files themselves persist on disk regardless of private mode.")
-            else:
-                msg = "No download records found in this profile's History database."
-            Label(parent, text=msg,
-                  font=FONT_MAIN, bg=BG, fg=TEXT_DIM, justify=LEFT
-                  ).pack(pady=30, padx=20)
-            return
-
-        Label(parent,
-              text=f"{len(rows)} download(s)  —  downloaded files persist regardless "
-                   "of private mode",
-              font=FONT_SUB, bg=BG, fg=TEXT_DIM, anchor=W
-              ).pack(fill=X, padx=12, pady=(8, 0))
-
-        tree = self._make_treeview(
-            parent, ("File", "Source URL", "Size (bytes)", "Started"))
-        tree.column("File",         width=260, minwidth=120)
-        tree.column("Source URL",   width=380, minwidth=120)
-        tree.column("Size (bytes)", width=110, minwidth=80,  stretch=False)
-        tree.column("Started",      width=160, minwidth=120, stretch=False)
-        for i, row in enumerate(rows):
-            tree.insert("", END, values=row,
-                        tags=("odd" if i % 2 else "even",))
 
     # ── Feature: View artefacts folder ───────────────────────────────────────
 
