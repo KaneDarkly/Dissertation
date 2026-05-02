@@ -3,9 +3,19 @@ from tkinter import filedialog, messagebox
 from tkinter import ttk
 import os
 from OpenFile import mount_e01_arsenal, unmount_arsenal
-from Extract_Arefacts import extract_browser_artefacts_from_mounted
+from Extract_Arefacts import (
+    extract_browser_artefacts_from_mounted,
+    hash_file,
+    read_manifest_hashes,
+    MANIFEST_FILENAME,
+    MANIFEST_HASH_FILENAME,
+)
 from drive_utils import list_all_drives
-from private_browsing_check import check_private_browsing_indicators
+from private_browsing_check import (
+    check_private_browsing_indicators,
+    get_flagged_artefacts,
+    format_duration,
+)
 import time
 
 # ── Colour palette ────────────────────────────────────────────────────────────
@@ -29,35 +39,36 @@ FONT_SUB   = ("Segoe UI",  9)
 class Fullscreen_Window:
 
     def __init__(self):
+        # Root window + global colour defaults for the Combobox dropdown list
+        # (must be set before any Combobox is created)
         self.tk = Tk()
         self.tk.configure(bg=BG)
-
-        # Style the combobox dropdown list (must happen before any Combobox is created)
         self.tk.option_add("*TCombobox*Listbox.background",       PANEL)
         self.tk.option_add("*TCombobox*Listbox.foreground",       TEXT)
         self.tk.option_add("*TCombobox*Listbox.selectBackground", ACCENT)
         self.tk.option_add("*TCombobox*Listbox.selectForeground", BG)
 
-        # Invisible compatibility frame (kept for parity with original)
+        # Compatibility frame retained from the original prototype
         self.frame = Frame(self.tk, bg=BG)
         self.frame.pack()
 
+        # Window-level keybindings + title + sizing
         self.state = False
         self.tk.bind("<F11>", self.toggle_fullscreen)
         self.tk.bind("<Escape>", self.end_fullscreen)
         self.tk.title("Forensic Artefact Extractor")
-
         width, height = 1000, 700
         self.tk.geometry(f"{width}x{height}")
         self._center_window(width, height)
 
+        # Build the persistent UI scaffold (styles → header → toolbar → status)
         self._apply_styles()
         self._build_header()
         self._build_toolbar()
+        self._build_status_bar()  # packed BOTTOM before the expanding content area
 
-        # Status bar must be packed from BOTTOM before the expanding content frame
-        self._build_status_bar()
-
+        # Main content region — every screen (welcome, viewer, flagged view) is
+        # rendered into this frame after clear_artefact_frame() wipes it.
         Frame(self.tk, bg=BORDER, height=1).pack(fill=X)
         self.artefact_frame = Frame(self.tk, bg=BG)
         self.artefact_frame.pack(side=TOP, fill=BOTH, expand=True)
@@ -67,6 +78,8 @@ class Fullscreen_Window:
     # ── Style sheet ──────────────────────────────────────────────────────────
 
     def _apply_styles(self):
+        # Centralised ttk style sheet — every Combobox, Treeview, Scrollbar
+        # and Progressbar in the app inherits from these definitions.
         style = ttk.Style(self.tk)
         style.theme_use("clam")
 
@@ -80,12 +93,16 @@ class Fullscreen_Window:
             selectbackground=[("readonly", ACCENT)],
             foreground=[("readonly", TEXT)])
 
+        # Treeview body — fieldbackground set to BORDER so the gaps between
+        # cells (rendered when borderwidth>0) show as visible 1px gridlines.
         style.configure("Treeview",
             background=PANEL, foreground=TEXT,
-            fieldbackground=PANEL, rowheight=26, font=FONT_MAIN)
+            fieldbackground=BORDER, rowheight=28, font=FONT_MAIN,
+            bordercolor=BORDER, borderwidth=1, relief="solid")
         style.configure("Treeview.Heading",
             background=BTN_BG, foreground=ACCENT,
-            relief="flat", font=("Segoe UI", 9, "bold"))
+            relief="solid", borderwidth=1, bordercolor=BORDER,
+            font=("Segoe UI", 9, "bold"))
         style.map("Treeview",
             background=[("selected", ACCENT)],
             foreground=[("selected", BG)])
@@ -264,14 +281,305 @@ class Fullscreen_Window:
         self.status_var.set(text)
         self.tk.update_idletasks()
 
+    # ── Feature: Hash manifest verification ──────────────────────────────────
+
+    def _verify_integrity(self, _user_browser_map):
+        """
+        Single-shot integrity check.  Re-hash manifest.csv and compare to the
+        MD5 / SHA-1 / SHA-256 stored in manifest.hashes at extraction time.
+        If any per-file row inside the manifest had been altered, the manifest's
+        own hash would change — so one comparison covers the whole extraction.
+        """
+        folder = getattr(self, 'loaded_artefacts_folder', None)
+        if not folder:
+            messagebox.showerror("No Folder Loaded",
+                "Open an extracted artefacts folder first using View Artefacts.")
+            return
+
+        manifest_path = os.path.join(folder, MANIFEST_FILENAME)
+        sidecar_path  = os.path.join(folder, MANIFEST_HASH_FILENAME)
+
+        if not os.path.isfile(manifest_path):
+            messagebox.showerror("Manifest Missing",
+                f"No {MANIFEST_FILENAME} found in:\n{folder}\n\n"
+                "Manifests are written automatically for new extractions. "
+                "Older folders extracted before this feature was added will not have one.")
+            return
+        if not os.path.isfile(sidecar_path):
+            messagebox.showerror("Hash Sidecar Missing",
+                f"No {MANIFEST_HASH_FILENAME} found in:\n{folder}\n\n"
+                "Without it the manifest's expected digest is unknown.")
+            return
+
+        expected = read_manifest_hashes(sidecar_path)
+        if not all(k in expected for k in ("md5", "sha1", "sha256")):
+            messagebox.showerror("Sidecar Unreadable",
+                f"{MANIFEST_HASH_FILENAME} could not be parsed.")
+            return
+
+        self.set_status("Verifying manifest integrity...")
+        actual_md5, actual_sha1, actual_sha256 = hash_file(manifest_path)
+
+        match_md5    = actual_md5    == expected["md5"]
+        match_sha1   = actual_sha1   == expected["sha1"]
+        match_sha256 = actual_sha256 == expected["sha256"]
+        all_match    = match_md5 and match_sha1 and match_sha256
+
+        self._show_integrity_dialog(
+            manifest_path, sidecar_path, expected,
+            (actual_md5, actual_sha1, actual_sha256),
+            (match_md5, match_sha1, match_sha256), all_match,
+        )
+
+        self.set_status(
+            "Integrity verified: manifest unchanged." if all_match
+            else "Integrity check FAILED: manifest has been modified.")
+
+    def _show_integrity_dialog(self, manifest_path, sidecar_path,
+                               expected, actual, matches, all_match):
+        """Modal dialog showing the manifest's expected vs computed digests."""
+        actual_md5, actual_sha1, actual_sha256 = actual
+        match_md5, match_sha1, match_sha256    = matches
+
+        dlg = Toplevel(self.tk)
+        dlg.title("Integrity Verification")
+        dlg.configure(bg=BG)
+        dlg.resizable(False, False)
+        dlg.grab_set()
+        w, h = 720, 360
+        x = self.tk.winfo_x() + (self.tk.winfo_width()  - w) // 2
+        y = self.tk.winfo_y() + (self.tk.winfo_height() - h) // 2
+        dlg.geometry(f"{w}x{h}+{x}+{y}")
+
+        # Top accent strip — green when verified, red when tampered
+        verdict_color = "#56d364" if all_match else "#ff7b72"
+        Frame(dlg, bg=verdict_color, height=4).pack(fill=X)
+
+        # Verdict header
+        Label(dlg,
+              text=("INTEGRITY VERIFIED" if all_match
+                    else "INTEGRITY CHECK FAILED"),
+              font=("Segoe UI", 14, "bold"),
+              bg=BG, fg=verdict_color
+              ).pack(pady=(14, 2))
+        Label(dlg,
+              text=("All three manifest digests match: extraction unchanged."
+                    if all_match
+                    else "One or more digests do not match: manifest has been altered."),
+              font=FONT_SUB, bg=BG, fg=TEXT_DIM
+              ).pack(pady=(0, 10))
+
+        # Per-algorithm digest rows (expected vs computed + per-row verdict)
+        body = Frame(dlg, bg=BG)
+        body.pack(fill=BOTH, expand=True, padx=20)
+
+        def digest_row(label, exp, act, ok):
+            row_color = "#56d364" if ok else "#ff7b72"
+            row = Frame(body, bg=PANEL)
+            row.pack(fill=X, pady=4, ipady=4)
+            Label(row, text=label, font=("Consolas", 9, "bold"),
+                  bg=PANEL, fg=ACCENT, width=8, anchor=W
+                  ).pack(side=LEFT, padx=(8, 4))
+            Label(row, text="OK" if ok else "FAIL",
+                  font=("Segoe UI", 9, "bold"),
+                  bg=PANEL, fg=row_color, width=6, anchor=W
+                  ).pack(side=LEFT)
+            digests = Frame(row, bg=PANEL)
+            digests.pack(side=LEFT, fill=X, expand=True, padx=(4, 8))
+            Label(digests, text=f"expected:  {exp}",
+                  font=("Consolas", 8), bg=PANEL, fg=TEXT, anchor=W
+                  ).pack(fill=X)
+            Label(digests, text=f"computed:  {act or '—'}",
+                  font=("Consolas", 8), bg=PANEL, fg=row_color, anchor=W
+                  ).pack(fill=X)
+
+        digest_row("MD5",     expected["md5"],    actual_md5,    match_md5)
+        digest_row("SHA-1",   expected["sha1"],   actual_sha1,   match_sha1)
+        digest_row("SHA-256", expected["sha256"], actual_sha256, match_sha256)
+
+        # Footer with file paths + close button
+        meta = Frame(dlg, bg=BG)
+        meta.pack(fill=X, padx=20, pady=(8, 4))
+        Label(meta, text=f"Manifest:  {manifest_path}",
+              font=FONT_SUB, bg=BG, fg=TEXT_DIM, anchor=W
+              ).pack(fill=X)
+        Label(meta, text=f"Sidecar:   {sidecar_path}",
+              font=FONT_SUB, bg=BG, fg=TEXT_DIM, anchor=W
+              ).pack(fill=X)
+        if expected.get("generated_utc"):
+            Label(meta, text=f"Generated: {expected['generated_utc']} UTC",
+                  font=FONT_SUB, bg=BG, fg=TEXT_DIM, anchor=W
+                  ).pack(fill=X)
+
+        self._make_btn(dlg, "Close", dlg.destroy
+                       ).pack(side=BOTTOM, pady=(4, 14))
+
+    # ── Feature: Flagged artefacts (suspected private browsing) ──────────────
+
+    def _view_flagged_from_map(self, user_browser_map):
+        """
+        Run the temporal-gap analysis against the database files already
+        loaded in the artefact viewer (user_browser_map is the same structure
+        produced by view_artefacts_folder).  Replaces the artefact panel with
+        the hierarchical flagged-artefacts tree.
+        """
+        self.set_status("Scanning loaded profiles for flagged artefacts...")
+
+        # Run the gap-detection pass on every (user, browser) database
+        flagged = {}
+        for username, browsers in user_browser_map.items():
+            for browser_name, db_path in browsers.items():
+                gaps = get_flagged_artefacts(db_path, browser_name)
+                if gaps:
+                    flagged[(username, browser_name)] = gaps
+
+        self.clear_artefact_frame()
+
+        # Header strip with title + back-to-viewer button
+        nav = Frame(self.artefact_frame, bg=PANEL, height=40)
+        nav.pack(fill=X)
+        nav.pack_propagate(False)
+        Label(nav, text="Flagged Artefacts  —  Suspected Private Browsing",
+              font=FONT_HEAD, bg=PANEL, fg=TEXT
+              ).pack(side=LEFT, padx=15, pady=10)
+        self._make_btn(nav, "← Back to Artefact Viewer",
+                       lambda: self.show_user_dropdown(user_browser_map)
+                       ).pack(side=RIGHT, padx=15, pady=6)
+
+        if not flagged:
+            wrap = Frame(self.artefact_frame, bg=BG)
+            wrap.pack(expand=True)
+            Label(wrap,
+                  text="No flagged artefacts found.\n"
+                       "No bookmarks or downloads were detected inside quiet windows "
+                       "across the loaded profiles.",
+                  font=FONT_MAIN, bg=BG, fg=TEXT_DIM, justify=LEFT
+                  ).pack(pady=30)
+            self.set_status("No flagged artefacts found in loaded profiles.")
+            return
+
+        self._build_flagged_view(flagged)
+
+        total_artefacts = sum(
+            sum(len(g['downloads']) + len(g['bookmarks']) for g in gaps)
+            for gaps in flagged.values())
+        total_windows = sum(len(gaps) for gaps in flagged.values())
+        self.set_status(
+            f"{total_artefacts} flagged artefact(s) across "
+            f"{total_windows} quiet window(s) in {len(flagged)} profile(s).")
+
+    def _build_flagged_view(self, flagged_per_profile):
+        """Render the three-level flagged tree: profile → quiet window → artefact."""
+        # Caption sub-strip (the nav strip above already shows the title)
+        sub = Frame(self.artefact_frame, bg=BG)
+        sub.pack(fill=X, padx=10, pady=(8, 0))
+        Label(sub,
+              text="Bookmarks & downloads timestamped inside quiet history windows. "
+                   "“Active” = first → last artefact within the window (confirmed private-mode duration).",
+              font=FONT_SUB, bg=BG, fg=TEXT_DIM, justify=LEFT, anchor=W,
+              wraplength=1100
+              ).pack(fill=X)
+
+        # Hierarchical Treeview with H + V scrollbars
+        container = Frame(self.artefact_frame, bg=BG)
+        container.pack(fill=BOTH, expand=True, padx=10, pady=10)
+
+        vsb = ttk.Scrollbar(container, orient="vertical")
+        hsb = ttk.Scrollbar(container, orient="horizontal")
+        tree = ttk.Treeview(
+            container,
+            columns=("when", "title", "url"),
+            show=("tree", "headings"),
+            yscrollcommand=vsb.set, xscrollcommand=hsb.set,
+        )
+        tree.heading("#0",    text="Profile  /  Window  /  Artefact")
+        tree.heading("when",  text="Timestamp (UTC)")
+        tree.heading("title", text="Title  /  File")
+        tree.heading("url",   text="URL")
+
+        tree.column("#0",    width=620, minwidth=320, stretch=True)
+        tree.column("when",  width=170, minwidth=140, stretch=False)
+        tree.column("title", width=420, minwidth=180, stretch=True)
+        tree.column("url",   width=700, minwidth=200, stretch=True)
+
+        vsb.config(command=tree.yview)
+        hsb.config(command=tree.xview)
+        vsb.pack(side=RIGHT, fill=Y)
+        hsb.pack(side=BOTTOM, fill=X)
+        tree.pack(fill=BOTH, expand=True)
+
+        # Per-row colouring based on row type (profile / window / artefact)
+        tree.tag_configure("profile",
+                           background=PANEL, foreground=ACCENT,
+                           font=("Segoe UI", 10, "bold"))
+        tree.tag_configure("window",
+                           background="#1f1a0e", foreground="#e3b341",
+                           font=("Segoe UI", 9, "bold"))
+        tree.tag_configure("download", background=PANEL, foreground=TEXT)
+        tree.tag_configure("bookmark", background="#12171f", foreground=TEXT)
+
+        # Populate the tree: one profile node per (user, browser),
+        # one window node per detected gap, one leaf per flagged artefact
+        for (user, browser), gaps in sorted(flagged_per_profile.items()):
+            n_dl = sum(len(g['downloads']) for g in gaps)
+            n_bm = sum(len(g['bookmarks']) for g in gaps)
+            profile_label = (f"{user}  /  {browser}    "
+                             f"—  {len(gaps)} window(s),  "
+                             f"{n_dl} download(s),  {n_bm} bookmark(s)")
+            profile_id = tree.insert("", END,
+                                     text=profile_label,
+                                     tags=("profile",), open=True)
+
+            for gap in gaps:
+                gap_dur = format_duration(gap['end'] - gap['start'])
+                all_times = ([d['time'] for d in gap['downloads']] +
+                             [b['time'] for b in gap['bookmarks']])
+                if len(all_times) >= 2:
+                    a_start, a_end = min(all_times), max(all_times)
+                    active_str = (f"active {format_duration(a_end - a_start)}  "
+                                  f"({a_start.strftime('%H:%M')}→{a_end.strftime('%H:%M')})")
+                else:
+                    active_str = "single artefact"
+                window_label = (f"Quiet window   "
+                                f"{gap['start'].strftime('%Y-%m-%d %H:%M')}  →  "
+                                f"{gap['end'].strftime('%Y-%m-%d %H:%M')}     "
+                                f"(gap {gap_dur}  •  {active_str})")
+                window_id = tree.insert(profile_id, END,
+                                        text=window_label,
+                                        tags=("window",), open=True)
+
+                for dl in gap['downloads']:
+                    tree.insert(window_id, END,
+                                text="    [DOWNLOAD]",
+                                values=(
+                                    dl['time'].strftime("%Y-%m-%d %H:%M:%S"),
+                                    dl['file'],
+                                    dl['url'],
+                                ),
+                                tags=("download",))
+                for bm in gap['bookmarks']:
+                    tree.insert(window_id, END,
+                                text="    [BOOKMARK]",
+                                values=(
+                                    bm['time'].strftime("%Y-%m-%d %H:%M:%S"),
+                                    bm['title'],
+                                    bm['url'],
+                                ),
+                                tags=("bookmark",))
+
     # ── Feature: View artefacts folder ───────────────────────────────────────
 
     def view_artefacts_folder(self):
+        """Entry point for "View Artefacts": pick a previously extracted folder
+        and build a {user → {browser → history-db-path}} map for the viewer."""
         folder = filedialog.askdirectory(title="Select Extracted Artefacts Folder")
         if not folder:
             return
+        # Remember the loaded folder so the integrity-verifier can locate manifest.csv
+        self.loaded_artefacts_folder = folder
         self.set_status(f"Loading artefacts from: {folder}")
 
+        # Top-level entries inside the extracted folder are user names
         user_browser_map = {}
         try:
             usernames = [d for d in os.listdir(folder)
@@ -279,12 +587,12 @@ class Fullscreen_Window:
         except Exception:
             usernames = []
 
+        # For each user, locate the History DB inside each browser sub-folder.
+        # Layout produced by Extract_Arefacts.py is: <folder>/<user>/<browser>/...
         for username in usernames:
             user_path = os.path.join(folder, username)
             browser_map = {}
             for root, dirs, files in os.walk(user_path):
-                # Extracted output is structured as username/BrowserName/...
-                # so the first component below user_path is always the browser name.
                 rel = os.path.relpath(root, user_path)
                 browser_dir = rel.split(os.sep)[0]
                 if browser_dir == '.':
@@ -317,6 +625,12 @@ class Fullscreen_Window:
         hdr.pack_propagate(False)
         Label(hdr, text="Browser Artefact Viewer",
               font=FONT_HEAD, bg=PANEL, fg=TEXT).pack(side=LEFT, padx=15, pady=10)
+        self._make_btn(hdr, "Show Flagged Artefacts",
+                       lambda: self._view_flagged_from_map(user_browser_map)
+                       ).pack(side=RIGHT, padx=15, pady=6)
+        self._make_btn(hdr, "Verify Integrity",
+                       lambda: self._verify_integrity(user_browser_map)
+                       ).pack(side=RIGHT, padx=(15, 0), pady=6)
 
         # User selector row
         ctrl = self._section_row(self.artefact_frame)
@@ -341,6 +655,7 @@ class Fullscreen_Window:
         show_selected_user()
 
     def show_browser_dropdown(self, browser_map, parent_frame):
+        # Browser selector + the per-browser content area
         ctrl = self._section_row(parent_frame)
         Label(ctrl, text="Browser:", font=FONT_SUB, bg=PANEL, fg=TEXT_DIM
               ).pack(side=LEFT, padx=(0, 6))
@@ -354,6 +669,7 @@ class Fullscreen_Window:
         db_view_frame.pack(fill=BOTH, expand=True)
 
         def show_selected_browser(*args):
+            # Re-render on browser change: warning banner (if flagged) + tables
             for w in db_view_frame.winfo_children():
                 w.destroy()
             browser_name = browser_var.get()
@@ -368,7 +684,9 @@ class Fullscreen_Window:
         show_selected_browser()
 
     def show_database_tables(self, db_path, parent_frame):
+        """Build a table-picker + 100-row preview Treeview for the chosen DB."""
         import sqlite3
+        # List every table in the SQLite database
         try:
             conn = sqlite3.connect(db_path)
             cur = conn.cursor()
@@ -492,19 +810,26 @@ class Fullscreen_Window:
     # ── Feature: Mount & extract ──────────────────────────────────────────────
 
     def store_drives_and_mount(self):
+        """Snapshot the drive list, launch Arsenal Image Mounter, then run
+        extraction once the new mounted drive appears."""
         self.set_status("Storing drive list and launching Arsenal Image Mounter...")
         self.drives_before_mount = list_all_drives()
         mount_e01_arsenal(self)
-        time.sleep(10)
+        time.sleep(10)  # give AIM time to actually attach the volume
         self.extract_artefacts_mounted_gui(lambda: unmount_arsenal(self))
 
     def extract_artefacts_mounted_gui(self, on_complete=None):
+        """Identify the newly mounted drive, ask the user where to save, and
+        run the extraction in a background thread with a progress dialog."""
+        # Sanity check: we need a pre-mount snapshot to diff against
         drives_before = getattr(self, 'drives_before_mount', None)
         if drives_before is None:
             messagebox.showinfo("Info", "Please use the 'Mount E01' button before extracting artefacts.")
             return
         messagebox.showinfo("Mount Image",
             "If you haven't already, mount your E01 image now using Arsenal Image Mounter, then click OK.")
+
+        # Diff against the pre-mount snapshot to find the new volume
         drives_after = list_all_drives()
         new_drives = drives_after - drives_before
         if not new_drives:
@@ -512,6 +837,7 @@ class Fullscreen_Window:
                 "No new drive was detected. Please ensure the image is mounted.")
             return
 
+        # Prefer a new drive that actually contains user-data folders
         user_folders = ["Users", "Documents", "Users\Public", "Users\Default"]
         drive_options = []
         for drive in sorted(new_drives):
@@ -540,6 +866,7 @@ class Fullscreen_Window:
         if not output_dir:
             return
 
+        # Create a timestamped session folder so repeated extractions don't collide
         import datetime, threading
         session_folder = os.path.join(
             output_dir,
