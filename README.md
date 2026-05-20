@@ -4,7 +4,7 @@ A digital forensics tool for mounting E01 disk images, extracting browser
 artefacts in a chain-of-custody-aware way, and inferring whether private /
 incognito browsing took place on the source system.
 
-Built as the artefact for a Year 4 dissertation at Leeds Beckett University.
+Built as the artefact for a final year masters dissertation at Leeds Beckett University.
 
 ---
 
@@ -37,6 +37,7 @@ Built as the artefact for a Year 4 dissertation at Leeds Beckett University.
   — the free CLI build is sufficient. The tool needs `aim_cli.exe` to mount
   E01 images; no specific install location is required (see *AIM discovery*
   below).
+- **Administrator Privileges** (due to the requirment of temporarily mounting drives on your local machines)
 
 No `pip install` step — everything used by the tool ships with Python's
 standard library.
