@@ -37,7 +37,7 @@ Built as the artefact for a final year masters dissertation at Leeds Beckett Uni
   — the free CLI build is sufficient. The tool needs `aim_cli.exe` to mount
   E01 images; no specific install location is required (see *AIM discovery*
   below).
-- **Administrator Privileges** (due to the requirment of temporarily mounting drives on your local machines)
+- **Administrator Privileges** (due to the requirment of temporarily mounting drives on your local machine)
 
 No `pip install` step — everything used by the tool ships with Python's
 standard library.
